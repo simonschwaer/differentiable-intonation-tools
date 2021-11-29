@@ -16,7 +16,7 @@ or
 pip install -e .
 ```
 
-Required software packages: numpy (>= 1.17.0), scipy (>= 1.7.0), [librosa](https://github.com/librosa/librosa) (>= 0.8.0), [libtsm](https://github.com/meinardmueller/libtsm) (>= 1.1.0)
+Required software packages: numpy (>= 1.17.0), scipy (>= 1.7.0), [librosa](https://github.com/librosa/librosa) (>= 0.8.0), [libtsm](https://github.com/meinardmueller/libtsm) (>= 1.1.0, for the example)
 
 ## Usage
 
