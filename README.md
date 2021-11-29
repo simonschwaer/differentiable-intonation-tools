@@ -2,6 +2,8 @@
 
 The Differentiable Intonation Tools (`dit`) are a collection of Python functions to analyze the intonation in multitrack audio signals.
 
+In particular, two measures are made available here, a tonal cost (the proximity to a tonal grid) and a harmonic cost (the perceptual dissonance between salient frequencies). The cost measures can be used to adapt intonation of multitrack audio signals in relation to each other, by minimizing the the cost using gradient descent (as exemplified in the notebook `examples.ipynb`).
+
 
 ## Installation
 
@@ -13,6 +15,8 @@ or
 ```
 pip install -e .
 ```
+
+Required software packages: numpy (>= 1.17.0), scipy (>= 1.7.0), [librosa](https://github.com/librosa/librosa) (>= 0.8.0), [libtsm](https://github.com/meinardmueller/libtsm) (>= 1.1.0)
 
 ## Usage
 
