@@ -1,3 +1,12 @@
+"""
+Description: higher-level intonation analysis functions
+Contributors: Simon Schwär, Sebastian Rosenzweig, Meinard Müller
+License: The MIT license, https://opensource.org/licenses/MIT
+
+This file is part of the Differentiable Intonation Tools
+https://github.com/simonschwaer/differentiable-intonation-tools/
+"""
+
 import numpy as np
 
 from .cost import tonal_for_frames, harmonic_for_frames
