@@ -14,6 +14,12 @@ from librosa import frames_to_time as librosa_frames_to_time
 from librosa.decompose import hpss as librosa_hpss
 
 from scipy.signal import find_peaks as scipy_find_peaks
+from scipy.signal import get_window as scipy_window
+from scipy.interpolate import PPoly, splev, splrep
+
+import mir_eval
+
+import libtsm
 
 
 def f2c(f, a_ref=440.):
@@ -31,6 +37,22 @@ def f2c(f, a_ref=440.):
         Cents difference of f to MIDI pitch 0 (C-1). The return value has the same dimension as f.
     """
     return 1200 * np.log2(f/a_ref) + 6900
+
+def c2f(c, a_ref=440.):
+    """Convert cents difference to MIDI pitch 0 (C-1) to a frequency
+
+    Parameters
+    ----------
+        c : float scalar or numpy array
+            pitch in cents
+        a_ref : float
+            Reference frequency for MIDI pitch 69 in Hz (A4, default 440 Hz)
+
+    Returns
+    -------
+        Cents difference of f to MIDI pitch 0 (C-1). The return value has the same dimension as f.
+    """
+    return a_ref * 2**((c - 6900) / 1200)
 
 
 def f2s(f, a_ref=440.):
@@ -86,6 +108,83 @@ def s2f(s, a_ref=440., detune=0):
     octave = int(s[-1]) if s[-1].isnumeric() else 4
     
     return a_ref * np.power(2, steps/12. + octave - 69./12 + 1) * np.power(2, detune / 1200.)
+
+
+def find_peaks_harmonic(x, f0, fs, N=4096, H=2048, t_f0=None,
+    F_harm=20, F_perc=10, max_harm=100, max_inharm=1.05, prominence_db=8, prominence_win_len=101):
+    """Identify spectral peaks in an audio signal based on an initial F0 estimate.
+
+    The function is searching for peaks near the integer multiples of F0
+    using extremal values of interpolating spline of the spectral frame.
+    """
+    x_h, x_p = libtsm.hps(x, fil_len_harm=F_harm, fil_len_perc=F_perc, masking_mode='binary')
+    x_h = x_h[:,0] # remove channel dim added by libtsm
+    x_p = x_p[:,0] # remove channel dim added by libtsm
+
+    # calculate spectrogram of harmonic part
+    win = scipy_window("hann", N) # using flattop for optimal amplitude estimation
+    X = np.abs(librosa_stft(x_h, n_fft=N, hop_length=H, center=False, window=win))
+    X = X / np.sum(win) * 2 # normalize spectrum so that amplitudes correspond to actual sinusoid factors
+    t = librosa_frames_to_time(range(X.shape[1]), hop_length=H, sr=fs)
+    f_fft = np.fft.rfftfreq(N, 1/fs)
+
+    # resample f0 trajectory
+    if t_f0 is not None:
+        voiced = (f0 > 0).astype(int)
+        f0, _ = mir_eval.melody.resample_melody_series(t_f0, f0, voiced, t)
+
+    L = len(f0)
+    assert X.shape[1] == L, "Number of frames in F0 annotation does not match spectrogram size."
+
+    P = np.zeros((L, max_harm, 2))
+
+    # calculate a local threshold for harmonic prominence
+    window = np.hanning(prominence_win_len)
+    window /= np.sum(window)
+    thrsh = 20 * np.log10(
+        np.apply_along_axis(
+            lambda m: np.convolve(np.pad(m, (len(window)//2, len(window)//2)), window, mode="valid"), axis=0, arr=X
+        ) + 1e-8
+    )
+
+    for fr in range(L):
+        if f0[fr] <= 0:
+            continue # skip unvoiced frames
+
+        # find extremal values of interpolating spline of the spectral frame
+        tck = splrep(f_fft, X[:,fr], k=3, s=0)
+        ppoly = PPoly.from_spline(tck)
+        X_fr_extrema = ppoly.derivative().roots(extrapolate=False)
+        X_fr_extrema = np.append(X_fr_extrema, (f_fft[0], f_fft[-1]))
+
+        for i in range(max_harm):
+            f_test = (i + 1) * f0[fr]
+
+            if f_test > fs/2: # we're above Nyquist
+                continue
+
+            f_min = (i + 1/max_inharm) * f0[fr]
+            f_max = (i + max_inharm) * f0[fr]
+
+            mask = np.where((X_fr_extrema >= f_min) & (X_fr_extrema <= f_max))
+            if len(mask[0]) == 0: # no extrema in range, use integer multiple frequency
+                P[fr,i,0] = f_test
+                continue
+
+            X_range = splev(X_fr_extrema[mask], tck)
+            idx = np.argmax(X_range)
+
+            P[fr,i,0] = X_fr_extrema[mask[0][idx]]
+
+        mask = (P[fr, :, 0] > 0)
+        P[fr,mask,1] = np.clip(splev(P[fr, mask, 0], tck), 0, np.inf)
+
+        # remove harmonics that do not stand out enough
+        nearest_bin = np.argmin(np.abs(P[fr,:,0,None] - f_fft[None,:]), axis=1)
+        mask = (((20 * np.log10(P[fr,:,1] + 1e-8)) - thrsh[nearest_bin,fr]) < prominence_db)
+        P[fr, mask,:] = 0
+
+    return t, P, X
 
 
 def find_peaks(x,
@@ -193,24 +292,30 @@ def synth(f0,
             phase discontinuity between the two contiguous synthesized tones
             (only works when the harmonics don't change between calls)
     """
-
-    if waveform == 'square':
-        magnitudes = np.zeros((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[2::2,1] = np.array([1. / (n+1) for n in np.arange(2, num_harmonics, 2)])
-        magnitudes[0,1] = 1
-        magnitudes[:,1] *= 0.5
-    elif waveform == 'triangle':
-        magnitudes = np.ones((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[:,1] = np.array([8/(np.pi**2) * (-1)**int(n/2.) * n**(-2.) for n in np.arange(1, num_harmonics)])
-        magnitudes[1::2,1] = 0
-        magnitudes[:,1] *= 0.5
-    elif waveform == 'sawtooth':
-        magnitudes = np.ones((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n for n in np.arange(1, num_harmonics)])
-        magnitudes[:,1] *= 0.5
+    if isinstance(waveform, str):
+        if waveform == 'square':
+            magnitudes = np.zeros((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[2::2,1] = np.array([1. / (n+1) for n in np.arange(2, num_harmonics, 2)])
+            magnitudes[0,1] = 1
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'triangle':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[:,1] = np.array([8/(np.pi**2) * (-1)**int(n/2.) * n**(-2.) for n in np.arange(1, num_harmonics)])
+            magnitudes[1::2,1] = 0
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'sawtooth':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n for n in np.arange(1, num_harmonics)])
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'flat':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[:,1] *= 0.5
+        else:
+            raise ValueError("Unknown waveform shape.")
     else:
         magnitudes = np.asarray(waveform)
         assert len(magnitudes.shape) == 2 and magnitudes.shape[1] == 2, "Custom waveform must be a Nx2 numpy array."

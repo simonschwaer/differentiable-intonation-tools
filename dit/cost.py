@@ -8,6 +8,7 @@ https://github.com/simonschwaer/differentiable-intonation-tools/
 """
 
 import numpy as np
+from numba import jit
 
 
 def tonal(f, K=12, f_ref=440., gradient=False):
@@ -40,7 +41,7 @@ def tonal(f, K=12, f_ref=440., gradient=False):
     else:
         return np.pi * K * np.sin(2 * np.pi * K * np.log2(f_arr/f_ref)) / 1200
 
-
+# @jit
 def harmonic(f1, f2, fixed_wc=None, gradient=False):
     """Harmonic cost between frequencies based on Plomp/Levelt perceptual dissonance
 
@@ -101,7 +102,10 @@ def harmonic(f1, f2, fixed_wc=None, gradient=False):
                 wc = fixed_wc
                 assert wc > 0, "fixed_wc input to 'dit.cost.harmonic' must be strictly positive."
             else:
-                wc = 6.7 * min(f1_arr[i], f2_arr[j])**(-0.68)
+                f_m = (f1_arr[i] + f2_arr[j]) / 2
+                # wc = 0.67 * min(f1_arr[i], f2_arr[j])**(-0.68)
+                wc = 0.25 * 24.7 * ((4.37 * f_m) / 1000 + 1) / f_m
+                # wc = 0.03 * min(f1_arr[i], f2_arr[j])**(-0.35)
 
             ln_dfwc = np.log(np.abs(np.log2(f1_arr[i]/f2_arr[j]))/wc)
             if not gradient:
@@ -110,6 +114,80 @@ def harmonic(f1, f2, fixed_wc=None, gradient=False):
                 result[i,j] = -1 * np.exp(-1 * ln_dfwc**2) * ln_dfwc / (600 * np.log2(f1_arr[i]/f2_arr[j]))
 
     return result
+
+
+def kernel_berezovsky(x, x_max):
+    result = np.zeros_like(x)
+    mask = (x != 0)
+    x_log = np.log(np.abs(x[mask] / x_max[mask]))
+    result[mask] = np.exp(-1 * x_log**2)
+    return result
+
+def kernel_bigand(x):
+    return (4 * x * np.exp(1 - 4 * x))**2
+
+def kernel_marjieh(x, p=0.096, q=1.632):
+    result = np.zeros_like(x)
+    mask = (x >= p)
+    result[mask] = kernel_bigand(x[mask])
+    xp = x[~mask]/p
+    result[~mask] = (xp) * kernel_bigand(x[~mask]) - q * (1 - xp) * (1 + np.sin(2 * np.pi * xp - np.pi / 2))
+    return result
+
+def kernel_schwaer(x, x_min, x_max, q=1.632):
+    result = np.zeros_like(x)
+    mask = (x != 0)
+    x_log_max = np.log(np.abs(x[mask] / x_max[mask]))**2
+    x_log_min = np.log(np.abs(x[mask] / x_min[mask]))**2
+    x_log_minmax = np.log(np.abs(x_min[mask] / x_max[mask]))**2
+    result[mask] = np.exp(-x_log_max) - (q + np.exp(-x_log_minmax)) * np.exp(-x_log_min * 4)
+    return result
+
+def harmonic_new(f1, f2, max_at_erb=0.25, min_at_erb=0.08, kernel="berezovsky",
+                 individual_pairs=False, berezovsky_original_max=False, **kwargs):
+
+    if individual_pairs:
+        f_m = np.add(f1, f2) / 2
+    else:
+        f_m = np.add.outer(f1, f2) / 2
+
+    erb = 24.7 * ((4.37 * f_m) / 1000 + 1) / f_m
+
+    d_max = max_at_erb * erb
+    d_min = min_at_erb * erb
+
+    if kernel in ["berezovsky", "schwaer"]:
+        if individual_pairs:
+            d = np.log2(np.divide(f1, f2))
+        else:
+            d = np.log2(np.divide.outer(f1, f2))
+    elif kernel in ["marjieh", "bigand"]:
+        if individual_pairs:
+            d = np.abs(np.subtract(f1, f2)) / 1.72 * f_m**(-0.65)
+        else:
+            d = np.abs(np.subtract.outer(f1, f2)) / 1.72 * f_m**(-0.65)
+    else:
+        raise ValueError(f"Unknown kernel type '{kernel}'.")
+
+    if kernel == "berezovsky":
+        if berezovsky_original_max:
+            if individual_pairs:
+                f_min = np.minimum(f1, f2)
+            else:
+                f_min = np.minimum.outer(f1, f2)
+            d_max = 1.33 * f_min**(-0.68)
+        res = kernel_berezovsky(d, d_max, **kwargs)
+    elif kernel == "marjieh":
+        res = kernel_marjieh(d, **kwargs)
+    elif kernel == "bigand":
+        res = kernel_bigand(d, **kwargs)
+    elif kernel == "schwaer":
+        res = kernel_schwaer(d, d_min, d_max, **kwargs)
+    else:
+        raise ValueError(f"Unknown kernel type '{kernel}'.")
+
+    return res
+
 
 
 def tonal_for_frames(P1, P2, K=12, f_ref=440., fit_grid=True, gradient=False):
@@ -176,7 +254,7 @@ def tonal_for_frames(P1, P2, K=12, f_ref=440., fit_grid=True, gradient=False):
     return result
 
 
-def harmonic_for_frames(P1, P2, fixed_wc=None, gradient=False):
+def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp=1, norm="lead_backing_sum", **kwargs):
     """Calculate harmonic cost between all pairs of pure tones in two sets
 
     Parameters
@@ -207,26 +285,65 @@ def harmonic_for_frames(P1, P2, fixed_wc=None, gradient=False):
         so that the division results in a cost range comparable to the tonal cost.
     """
     P_lead, P_backing = _ensure_dimensions_peak_sets(P1, P2)
-    T = P_lead.shape[0]
 
-    result = np.zeros((T))
-    for t in range(T):
-        if len(P_lead[t]) == 0 or len(P_backing[t]) == 0 or \
-           np.sum(P_lead[t,:,0]) < 0.0001 or np.sum(P_backing[t,:,0]) < 0.0001:
-            # return zero cost if P1 or P2 is empty or practically silent
-            # (happens e.g. when a voice is quiet in the signal analyzed by 'utils.find_peaks')
-            continue
+    result = np.zeros((P_lead.shape[0]))
+    # ampl_tot = np.zeros((P_lead.shape[0]))
 
-        count = 0.
-        for i in range(len(P_lead[t])):
-            if P_lead[t,i,0] == 0: continue
-            for j in range(len(P_backing[t])): # TODO: use vectorization for this loop?
-                if P_backing[t,j,0] == 0: continue
+    for i in range(P_lead.shape[1]): # loop over lead harmonics
+        for j in range(P_backing.shape[1]): # loop over backing harmonics
+            mask = ((P_backing[:,j,0] > 0) & (P_lead[:,i,0] > 0))
 
-                ampl = min(abs(P_lead[t,i,1]), abs(P_backing[t,j,1]))
-                result[t] += ampl * harmonic(P_lead[t,i,0], P_backing[t,j,0], fixed_wc, gradient)[0,0]
+            ampl = np.minimum(np.abs(P_lead[mask,i,1]), np.abs(P_backing[mask,j,1])) # element-wise
+            if log_mag_weights:
+                ampl = np.log(1 + log_mag_gamma * ampl)
+            else:
+                ampl = ampl ** ampl_exp
 
-        result[t] /= np.sum(P_lead[t,:,1])
+            result[mask] += ampl * harmonic_new(P_lead[mask,i,0], P_backing[mask,j,0], individual_pairs=True, **kwargs)
+
+            # ampl_mask = (np.abs(np.log2(P_lead[mask,i,0] / P_backing[mask,j,0])) > 2)
+            # ampl[ampl_mask] = 0 # ignore distances over 1.2 octaves (see Plomp & Levelt, Hutchinson & Knopoff)
+            # ampl_tot[mask] += ampl
+
+
+    # result /= (ampl_tot + 1e-8)
+    if norm == "lead_sum":
+        ampls = np.abs(P_lead[:,:,1])
+        if log_mag_weights:
+            ampls = np.log(1 + log_mag_gamma * ampls)
+        else:
+            ampls = ampls ** ampl_exp
+
+        norm_val = np.sum(ampls, axis=1)
+    elif norm == "lead_count":
+        norm_val = P_lead.shape[1]
+    elif norm == "lead_backing_count":
+        norm_val = P_lead.shape[1] + P_backing.shape[1]
+    elif norm == "full_count":
+        norm_val = P_lead.shape[1] * P_backing.shape[1]
+    elif norm == "lead_backing_sum":
+        ampls = np.abs(np.concatenate([P_lead[:,:,1], P_backing[:,:,1]], axis=1))
+        if log_mag_weights:
+            ampls = np.log(1 + log_mag_gamma * ampls)
+        else:
+            ampls = ampls ** ampl_exp
+
+        norm_val = np.sum(ampls, axis=1)
+    elif norm == "full_sum":
+        a_l = np.abs(P_lead[:,:,1])
+        a_b = np.abs(P_backing[:,:,1])
+        ampls = np.minimum(a_l[:,:,None], a_b[:,None,:])
+        if log_mag_weights:
+            ampls = np.log(1 + log_mag_gamma * ampls)
+        else:
+            ampls = ampls ** ampl_exp
+
+        norm_val = np.sum(ampls, axis=(1, 2))
+
+    else:
+        raise ValueError(f"Unknown normalization type '{norm}'.")
+
+    result /= (norm_val + 1e-8)
 
     return result
 
