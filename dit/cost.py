@@ -118,7 +118,7 @@ def harmonic(f1, f2, fixed_wc=None, gradient=False):
 
 def kernel_berezovsky(x, x_max):
     result = np.zeros_like(x)
-    mask = (x != 0)
+    mask = (x != 0) & (x_max != 0)
     x_log = np.log(np.abs(x[mask] / x_max[mask]))
     result[mask] = np.exp(-1 * x_log**2)
     return result
@@ -144,38 +144,31 @@ def kernel_schwaer(x, x_min, x_max, q=1.632):
     return result
 
 def harmonic_new(f1, f2, max_at_erb=0.25, min_at_erb=0.08, kernel="berezovsky",
-                 individual_pairs=False, berezovsky_original_max=False, **kwargs):
+                 berezovsky_erb=False, **kwargs):
+    f_m = np.add(f1, f2) / 2
 
-    if individual_pairs:
-        f_m = np.add(f1, f2) / 2
-    else:
-        f_m = np.add.outer(f1, f2) / 2
-
-    erb = 24.7 * ((4.37 * f_m) / 1000 + 1) / f_m
+    erb = np.zeros(f_m.shape)
+    mask_erb = (f_m > 0)
+    erb[mask_erb] = np.log2(1 + 24.7 * ((4.37 * f_m[mask_erb]) / 1000 + 1) / f_m[mask_erb]) # 24.7 * ((4.37 * f_m[mask_erb]) / 1000 + 1) / f_m[mask_erb]
 
     d_max = max_at_erb * erb
     d_min = min_at_erb * erb
 
     if kernel in ["berezovsky", "schwaer"]:
-        if individual_pairs:
-            d = np.log2(np.divide(f1, f2))
-        else:
-            d = np.log2(np.divide.outer(f1, f2))
+        with np.errstate(divide='ignore', invalid='ignore'): # supress warning of log of zero
+            ratio = np.where(f2 > 0, f1 / f2, 0) # np.divide(f1, f2, where=(f2 != 0))
+            d = np.where(ratio > 0, np.log2(ratio), 0)
     elif kernel in ["marjieh", "bigand"]:
-        if individual_pairs:
-            d = np.abs(np.subtract(f1, f2)) / 1.72 * f_m**(-0.65)
-        else:
-            d = np.abs(np.subtract.outer(f1, f2)) / 1.72 * f_m**(-0.65)
+        d = np.zeros(f_m.shape)
+        mask_d = (f_m > 0)
+        d[mask_d] = np.abs(np.subtract(f1, f2))[mask_d] / 1.72 * f_m[mask_d]**(-0.65)
     else:
         raise ValueError(f"Unknown kernel type '{kernel}'.")
 
     if kernel == "berezovsky":
-        if berezovsky_original_max:
-            if individual_pairs:
-                f_min = np.minimum(f1, f2)
-            else:
-                f_min = np.minimum.outer(f1, f2)
-            d_max = 1.33 * f_min**(-0.68)
+        if berezovsky_erb:
+            f_min = np.minimum(f1, f2)
+            d_max = 0.67 * f_min**(-0.68)
         res = kernel_berezovsky(d, d_max, **kwargs)
     elif kernel == "marjieh":
         res = kernel_marjieh(d, **kwargs)
@@ -254,7 +247,7 @@ def tonal_for_frames(P1, P2, K=12, f_ref=440., fit_grid=True, gradient=False):
     return result
 
 
-def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp=1, norm="lead_backing_sum", **kwargs):
+def harmonic_for_frames(P_lead, P_backing, log_mag_weights=False, log_mag_gamma=1, ampl_exp=1, norm="lead_backing_sum", ampl_method="min", **kwargs):
     """Calculate harmonic cost between all pairs of pure tones in two sets
 
     Parameters
@@ -284,36 +277,28 @@ def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp
         that on average, each frequency in P1 is close to one or two frequencies in P2,
         so that the division results in a cost range comparable to the tonal cost.
     """
-    P_lead, P_backing = _ensure_dimensions_peak_sets(P1, P2)
+    if ampl_method == "min":
+        A = np.minimum(np.abs(P_lead[:,None,:,1]), np.abs(P_backing[:,:,None,1]))
+    elif ampl_method == "mult":
+        A = np.multiply(np.abs(P_lead[:,None,:,1]), np.abs(P_backing[:,:,None,1]))
+    elif ampl_method == "beating":
+        A =  P_lead[:,None,:,1] * P_backing[:,:,None,1]
+        A /= (P_lead[:,None,:,1] + P_backing[:,:,None,1] + 1e-8)
+    else:
+        raise ValueError(f"Unknown amplitude calculation method '{ampl_method}'.")
 
-    result = np.zeros((P_lead.shape[0]))
-    # ampl_tot = np.zeros((P_lead.shape[0]))
+    if log_mag_weights:
+        A = np.log(1 + log_mag_gamma * A)
+    else:
+        A = A ** ampl_exp
 
-    for i in range(P_lead.shape[1]): # loop over lead harmonics
-        for j in range(P_backing.shape[1]): # loop over backing harmonics
-            mask = ((P_backing[:,j,0] > 0) & (P_lead[:,i,0] > 0))
+    D = harmonic_new(P_lead[:,None,:,0], P_backing[:,:,None,0], **kwargs)
 
-            ampl = np.minimum(np.abs(P_lead[mask,i,1]), np.abs(P_backing[mask,j,1])) # element-wise
-            if log_mag_weights:
-                ampl = np.log(1 + log_mag_gamma * ampl)
-            else:
-                ampl = ampl ** ampl_exp
+    result = np.sum(A*D, axis=(1, 2))
 
-            result[mask] += ampl * harmonic_new(P_lead[mask,i,0], P_backing[mask,j,0], individual_pairs=True, **kwargs)
-
-            # ampl_mask = (np.abs(np.log2(P_lead[mask,i,0] / P_backing[mask,j,0])) > 2)
-            # ampl[ampl_mask] = 0 # ignore distances over 1.2 octaves (see Plomp & Levelt, Hutchinson & Knopoff)
-            # ampl_tot[mask] += ampl
-
-
-    # result /= (ampl_tot + 1e-8)
     if norm == "lead_sum":
         ampls = np.abs(P_lead[:,:,1])
-        if log_mag_weights:
-            ampls = np.log(1 + log_mag_gamma * ampls)
-        else:
-            ampls = ampls ** ampl_exp
-
+        ampls = np.log(1 + log_mag_gamma * ampls) if log_mag_weights else ampls ** ampl_exp
         norm_val = np.sum(ampls, axis=1)
     elif norm == "lead_count":
         norm_val = P_lead.shape[1]
@@ -323,23 +308,12 @@ def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp
         norm_val = P_lead.shape[1] * P_backing.shape[1]
     elif norm == "lead_backing_sum":
         ampls = np.abs(np.concatenate([P_lead[:,:,1], P_backing[:,:,1]], axis=1))
-        if log_mag_weights:
-            ampls = np.log(1 + log_mag_gamma * ampls)
-        else:
-            ampls = ampls ** ampl_exp
-
+        ampls = np.log(1 + log_mag_gamma * ampls) if log_mag_weights else ampls ** ampl_exp
         norm_val = np.sum(ampls, axis=1)
     elif norm == "full_sum":
-        a_l = np.abs(P_lead[:,:,1])
-        a_b = np.abs(P_backing[:,:,1])
-        ampls = np.minimum(a_l[:,:,None], a_b[:,None,:])
-        if log_mag_weights:
-            ampls = np.log(1 + log_mag_gamma * ampls)
-        else:
-            ampls = ampls ** ampl_exp
-
-        norm_val = np.sum(ampls, axis=(1, 2))
-
+        norm_val = np.sum(A, axis=(1, 2))
+    elif norm == "none":
+        norm_val = 1 - 1e-8
     else:
         raise ValueError(f"Unknown normalization type '{norm}'.")
 

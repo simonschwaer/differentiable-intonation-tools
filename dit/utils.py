@@ -111,15 +111,19 @@ def s2f(s, a_ref=440., detune=0):
 
 
 def find_peaks_harmonic(x, f0, fs, N=4096, H=2048, t_f0=None,
-    F_harm=20, F_perc=10, max_harm=100, max_inharm=1.05, prominence_db=8, prominence_win_len=101):
+    F_harm=20, F_perc=10, max_harm=100, max_inharm=1.05, prominence_db=8, prominence_smoothing=1.2,
+    abs_thrsh_db=-65, perform_hpss=False):
     """Identify spectral peaks in an audio signal based on an initial F0 estimate.
 
     The function is searching for peaks near the integer multiples of F0
     using extremal values of interpolating spline of the spectral frame.
     """
-    x_h, x_p = libtsm.hps(x, fil_len_harm=F_harm, fil_len_perc=F_perc, masking_mode='binary')
-    x_h = x_h[:,0] # remove channel dim added by libtsm
-    x_p = x_p[:,0] # remove channel dim added by libtsm
+    if perform_hpss:
+        x_h, x_p = libtsm.hps(x, fil_len_harm=F_harm, fil_len_perc=F_perc, masking_mode='binary')
+        x_h = x_h[:,0] # remove channel dim added by libtsm
+        x_p = x_p[:,0] # remove channel dim added by libtsm
+    else:
+        x_h = x
 
     # calculate spectrogram of harmonic part
     win = scipy_window("hann", N) # using flattop for optimal amplitude estimation
@@ -138,18 +142,17 @@ def find_peaks_harmonic(x, f0, fs, N=4096, H=2048, t_f0=None,
 
     P = np.zeros((L, max_harm, 2))
 
-    # calculate a local threshold for harmonic prominence
-    window = np.hanning(prominence_win_len)
-    window /= np.sum(window)
-    thrsh = 20 * np.log10(
-        np.apply_along_axis(
-            lambda m: np.convolve(np.pad(m, (len(window)//2, len(window)//2)), window, mode="valid"), axis=0, arr=X
-        ) + 1e-8
-    )
-
     for fr in range(L):
         if f0[fr] <= 0:
             continue # skip unvoiced frames
+
+        # calculate a local threshold for harmonic prominence
+        L_win = np.ceil(prominence_smoothing*f0[fr]/fs*N).astype(int)
+        window = np.hanning(L_win + (1 - L_win % 2))
+        window /= np.sum(window)
+        thrsh = 20 * np.log10(
+            np.convolve(np.pad(X[:,fr], (len(window)//2, len(window)//2)), window, mode="valid")
+        ) + 1e-8
 
         # find extremal values of interpolating spline of the spectral frame
         tck = splrep(f_fft, X[:,fr], k=3, s=0)
@@ -181,8 +184,17 @@ def find_peaks_harmonic(x, f0, fs, N=4096, H=2048, t_f0=None,
 
         # remove harmonics that do not stand out enough
         nearest_bin = np.argmin(np.abs(P[fr,:,0,None] - f_fft[None,:]), axis=1)
-        mask = (((20 * np.log10(P[fr,:,1] + 1e-8)) - thrsh[nearest_bin,fr]) < prominence_db)
+        ampl_db = 20 * np.log10(P[fr,:,1] + 1e-8)
+        mask = ((ampl_db - thrsh[nearest_bin]) < prominence_db) & (ampl_db < abs_thrsh_db)
         P[fr, mask,:] = 0
+
+        # if fr == 176:
+        #     import matplotlib.pyplot as plt
+        #     plt.plot(f_fft, 20 * np.log10(1e-8 + X[:,fr]), c="k")
+        #     plt.plot(f_fft, thrsh, c="r")
+        #     plt.plot(X_fr_extrema, 20 * np.log10(1e-8 + splev(X_fr_extrema, tck)), "o", c="b")
+        #     plt.xlim(0, 3000)
+        #     plt.show()
 
     return t, P, X
 
@@ -237,7 +249,7 @@ def find_peaks(x,
     P = np.zeros((len(t), max_peaks, 2))
 
     # filter out percussive component and look for peaks only in harmonic part
-    H_STFT, _ = librosa_hpss(H_STFT, kernel_size=[hpss_filter_len, 32], margin=1.0)
+    # H_STFT, _ = librosa_hpss(H_STFT, kernel_size=[hpss_filter_len, 32], margin=1.0)
 
     # give lower weight to everything above given limit
     mi = int(np.round(freq_lim / fs * fft_size))
@@ -351,6 +363,7 @@ def _find_peaks_single(H, fft_size, fs, max_peaks, **kwargs):
 
     # convert to log magnitude spectrum
     H_mag = np.abs(H)
+    H_scale = np.sum(scipy_window("hann", fft_size)) / 2
     H_db = np.clip(20*np.log10(H_mag + 0.00001), -90, 1000) # adding -100dB const to avoid log(0)
 
     sig_rms = np.sqrt(np.mean(np.square(H_mag))/fft_size) # rms of harmonic part
@@ -361,7 +374,7 @@ def _find_peaks_single(H, fft_size, fs, max_peaks, **kwargs):
     for i in maxima:
         # use parabolic interpolation to find true peak and save frequency val
         k = i + (H_db[i-1] - H_db[i+1]) / (2 * (H_db[i-1] - 2 * H_db[i] + H_db[i+1]))
-        peaks.append((fs*k/fft_size, H_mag[i]/np.max(H_mag)))
+        peaks.append((fs*k/fft_size, H_mag[i]/H_scale))
 
     peaks.sort(key=lambda tup: tup[1], reverse=True) # sort by amplitude (highest first)
     peaks = peaks[:max_peaks] # truncate
