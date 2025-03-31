@@ -16,14 +16,8 @@ Simon Schwär, Sebastian Rosenzweig, and Meinard Müller: [A Differentiable Cost
 
 There is no pip package (yet?), so please clone this repository, navigate to the root folder and install with
 ```
-python setup.py [install|develop]
+flit install --symlink --deps all
 ```
-or
-```
-pip install -e .
-```
-
-Required software packages: numpy (>= 1.17.0), scipy (>= 1.7.0), [librosa](https://github.com/librosa/librosa) (>= 0.8.0), [libtsm](https://github.com/meinardmueller/libtsm) (>= 1.1.0, for the example)
 
 ## Usage
 
@@ -32,4 +26,4 @@ Please see the notebook `examples.ipynb` for some usage examples. API documentat
 
 ## Acknowledgements
 
-This project was supported by the German Research Foundation (DFG MU 2686/12-1, MU 2686/13-1). The International Audio Laboratories Erlangen are a joint institution of the Friedrich-Alexander Universität Erlangen-Nürnberg (FAU) and Fraunhofer Institute for Integrated Circuits IIS.
+This project is supported by the German Research Foundation (DFG MU 2686/12-1, MU 2686/13-1, MU 2686/13-2). The International Audio Laboratories Erlangen are a joint institution of the Friedrich-Alexander Universität Erlangen-Nürnberg (FAU) and Fraunhofer Institute for Integrated Circuits IIS.

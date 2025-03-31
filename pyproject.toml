@@ -1,0 +1,44 @@
+[build-system]
+requires = ["flit"]
+build-backend = "flit.buildapi"
+
+[project]
+name =  "dit"
+authors = [
+    {name = "Simon Schwär", email = "simon.schwaer@audiolabs-erlangen.de"},
+    {name = "Sebastian Rosenzweig"},
+    {name = "Meinard Müller", email = "meinard.mueller@audiolabs-erlangen.de"},
+]
+description = "Differentiable Intonation Tools"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+requires-python = ">=3.7"
+dynamic = ["version"]
+dependencies = [
+    "librosa >= 0.8.0",
+    "numpy >= 1.17.0",
+    "scipy >= 1.7.0",
+    "mir_eval >= 0.7.0",
+]
+license = {file = "LICENSE"}
+
+[project.optional-dependencies]
+develop = [ # required for executing demo notebooks
+    "ipython >= 8.10.0",
+    "jupyter",
+    "libtsm >= 1.1.0",
+
+    "flit >= 3.10.0",
+    "nbstripout",
+]
+test = ["pytest", "pytest-runner"]
+doc = ["sphinx", "sphinx_rtd_theme"]
+
+[project.urls]
+Repository = "https://github.com/simonschwaer/differentiable-intonation-tools/"
