@@ -331,24 +331,30 @@ def synth(f0,
             phase discontinuity between the two contiguous synthesized tones
             (only works when the harmonics don't change between calls)
     """
-
-    if waveform == 'square':
-        magnitudes = np.zeros((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[2::2,1] = np.array([1. / (n+1) for n in np.arange(2, num_harmonics, 2)])
-        magnitudes[0,1] = 1
-        magnitudes[:,1] *= 0.5
-    elif waveform == 'triangle':
-        magnitudes = np.ones((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[:,1] = np.array([8/(np.pi**2) * (-1)**int(n/2.) * n**(-2.) for n in np.arange(1, num_harmonics)])
-        magnitudes[1::2,1] = 0
-        magnitudes[:,1] *= 0.5
-    elif waveform == 'sawtooth':
-        magnitudes = np.ones((num_harmonics, 2))
-        magnitudes[:,0] = np.arange(1, num_harmonics+1)
-        magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n for n in np.arange(1, num_harmonics)])
-        magnitudes[:,1] *= 0.5
+    if isinstance(waveform, str):
+        if waveform == 'square':
+            magnitudes = np.zeros((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[2::2,1] = np.array([1. / (n+1) for n in np.arange(2, num_harmonics, 2)])
+            magnitudes[0,1] = 1
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'triangle':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[:,1] = np.array([8/(np.pi**2) * (-1)**int(n/2.) * n**(-2.) for n in np.arange(1, num_harmonics)])
+            magnitudes[1::2,1] = 0
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'sawtooth':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n for n in np.arange(1, num_harmonics)])
+            magnitudes[:,1] *= 0.5
+        elif waveform == 'flat':
+            magnitudes = np.ones((num_harmonics, 2))
+            magnitudes[:,0] = np.arange(1, num_harmonics+1)
+            magnitudes[:,1] *= 0.5
+        else:
+            raise ValueError("Unknown waveform shape.")
     else:
         magnitudes = np.asarray(waveform)
         assert len(magnitudes.shape) == 2 and magnitudes.shape[1] == 2, "Custom waveform must be a Nx2 numpy array."
