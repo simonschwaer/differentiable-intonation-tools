@@ -96,8 +96,8 @@ def test_tonal_cumulated():
     sig, _ = dit.utils.synth(220 * np.power(2, 4.5/12), 1., fs, waveform='sawtooth')
     x2 += sig
 
-    _, P_lead, _ = dit.utils.find_peaks(x1, fs=fs, fft_size=8000, hop_size=8000, max_peaks=6, height=0)
-    _, P_backing, _ = dit.utils.find_peaks(x2, fs=fs, fft_size=8000, hop_size=8000, max_peaks=6, height=0)
+    _, P_lead, _ = dit.utils.find_peaks(x1, fs=fs, N=8000, H=8000, max_peaks=6, height=0)
+    _, P_backing, _ = dit.utils.find_peaks(x2, fs=fs, N=8000, H=8000, max_peaks=6, height=0)
 
     c_fitted = dit.cost.tonal_for_frames(P_lead, P_backing, fit_grid=True)
     c_440 = dit.cost.tonal_for_frames(P_lead, P_backing, fit_grid=False)
@@ -131,8 +131,8 @@ def test_harmonic_cumulated():
     sig, _ = dit.utils.synth(220 * 1.5, 1., fs, waveform='sawtooth')
     x2 += sig
 
-    _, P_lead, _ = dit.utils.find_peaks(x1, fs=fs, fft_size=4000, hop_size=4000, max_peaks=12, height=0)
-    _, P_backing, _ = dit.utils.find_peaks(x2, fs=fs, fft_size=4000, hop_size=4000, max_peaks=12, height=0)
+    _, P_lead, _ = dit.utils.find_peaks(x1, fs=fs, N=4000, H=4000, max_peaks=12, height=0)
+    _, P_backing, _ = dit.utils.find_peaks(x2, fs=fs, N=4000, H=4000, max_peaks=12, height=0)
 
     c = dit.cost.harmonic_for_frames(P_lead, P_backing)
     dc = 1000 * dit.cost.harmonic_for_frames(P_lead, P_backing, gradient=True)

@@ -17,11 +17,37 @@ def test_find_peaks():
 	# this is above max_freq, so it should be below the threshold
 	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*4500)
 	
-	t, P, H = dit.utils.find_peaks(x, fs=fs, fft_size=8000, hop_size=8000, max_peaks=4, height=0)
+	t, P, H = dit.utils.find_peaks(x, fs=fs, N=8000, H=8000, max_peaks=4, height=0)
 
 	assert P.shape[0] == 2 and P.shape[1] == 4 and P.shape[2] == 2
 	assert np.allclose(P[0,:,0], np.array([200, 401.5, 598.1, 800]), atol=0.05)
 	assert np.allclose(P[1,:,0], np.array([3000, 3500, 4000, 0]), atol=5) # tolerance is higher at higher freqs
+
+
+def test_find_peaks_harmonic():
+	fs = 16000.
+	t = np.linspace(0, 1., int(fs))
+	x = np.zeros(t.shape)
+
+	x[:8000] += 0.25 * np.sin(2*np.pi*t[:8000]*200)
+	x[:8000] += 0.25 * np.sin(2*np.pi*t[:8000]*401)
+	x[:8000] += 0.25 * np.sin(2*np.pi*t[:8000]*598.1)
+	x[:8000] += 0.25 * np.sin(2*np.pi*t[:8000]*800)
+
+	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*2000)
+	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*3100)
+	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*4000)
+	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*5500)
+	x[8000:] += 0.25 * np.sin(2*np.pi*t[8000:]*6010)
+
+	f0 = np.array([200, 2000])
+
+	t, P, H = dit.utils.find_peaks_harmonic(x, f0, fs, N=8000, H=8000, max_harm=5, max_inharm=1.05, prominence_db=8,
+								   prominence_smoothing=1.2, abs_thrsh_db=-65, perform_hps=False, F_harm=20, F_perc=10)
+
+	assert P.shape[0] == 2 and P.shape[1] == 5 and P.shape[2] == 2
+	assert np.allclose(P[0,:,0], np.array([200, 401, 598.1, 800, 0]), atol=0.5)
+	assert np.allclose(P[1,:,0], np.array([2000, 4000, 6010, 0, 0]), atol=0.5)
 
 
 def test_synth():
@@ -37,7 +63,7 @@ def test_synth():
 	sig, _ = dit.utils.synth(200, 0.25, fs, waveform='square', init_phase=phase_carry)
 	x[int(0.75*fs):] = sig
 	
-	t, P, H = dit.utils.find_peaks(x, fs=fs, fft_size=4000, hop_size=8000, max_peaks=4, height=0)
+	t, P, H = dit.utils.find_peaks(x, fs=fs, N=4000, H=8000, max_peaks=4, height=0)
 
 	assert P.shape[0] == 2 and P.shape[1] == 4 and P.shape[2] == 2
 	assert np.allclose(P[0,:,0], np.array([200, 400, 600, 800]), atol=0.1)
