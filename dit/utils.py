@@ -9,11 +9,12 @@ https://github.com/simonschwaer/differentiable-intonation-tools/
 
 import numpy as np
 
-from librosa import stft as librosa_stft
-from librosa import frames_to_time as librosa_frames_to_time
-from librosa.decompose import hpss as librosa_hpss
+import librosa
 
-from scipy.signal import find_peaks as scipy_find_peaks
+import scipy.signal
+from scipy.interpolate import PPoly, splev, splrep
+
+import mir_eval
 
 
 def f2c(f, a_ref=440.):
@@ -31,6 +32,22 @@ def f2c(f, a_ref=440.):
         Cents difference of f to MIDI pitch 0 (C-1). The return value has the same dimension as f.
     """
     return 1200 * np.log2(f/a_ref) + 6900
+
+def c2f(c, a_ref=440.):
+    """Convert cents difference to MIDI pitch 0 (C-1) to a frequency
+
+    Parameters
+    ----------
+        c : float scalar or numpy array
+            pitch in cents
+        a_ref : float
+            Reference frequency for MIDI pitch 69 in Hz (A4, default 440 Hz)
+
+    Returns
+    -------
+        Cents difference of f to MIDI pitch 0 (C-1). The return value has the same dimension as f.
+    """
+    return a_ref * 2**((c - 6900) / 1200)
 
 
 def f2s(f, a_ref=440.):
@@ -88,14 +105,136 @@ def s2f(s, a_ref=440., detune=0):
     return a_ref * np.power(2, steps/12. + octave - 69./12 + 1) * np.power(2, detune / 1200.)
 
 
-def find_peaks(x,
-               fs=48000., 
-               fft_size=4096,
-               hop_size=2048,
-               max_peaks=16,
-               hpss_filter_len=10,
-               freq_lim=4000.,
-               **kwargs):
+def find_peaks_harmonic(x, f0, fs, N=4096, H=2048, t_f0=None,
+    max_harm=100, max_inharm=1.05, prominence_db=8, prominence_smoothing=1.2, abs_thrsh_db=-65,
+    perform_hps=False, F_harm=20, F_perc=10):
+    """Identify spectral peaks in an audio signal based on an initial F0 estimate.
+
+    The function is searching for peaks near the integer multiples of F0
+    using extremal values of interpolating spline of the spectral frame.
+
+    Parameters
+    ----------
+        x : 1D np.ndarray
+            Input audio signal
+        f0 : 1D np.ndarray
+            Frame-wise F0 estimates or annotations (see `t_f0` how this may be resampled to fit the analysis hop size
+            of the peak finding)
+        fs : float
+            Sampling rate in Hz
+        N : int
+            Analysis window size in samples
+        H : int
+            Analysis hop size in samples
+        t_f0 : None or 1D np.ndarray
+            Time for each F0 estimate in `f0`. Has to have same length as `f0`.
+
+            If this is given, the F0 trajectory is resampled to the exact analysis frames specified by
+            the length of the signal `x` and the hop size `H`. Otherwise, the length of `f0` must correspond
+            exactly to the number of analysis frames.
+        max_harm : int
+            Maximum number of harmonics to look for in the signal (also limited by Nyquist frequency)
+        max_inharm : float
+            Maximum allowed inharmonicity for each harmonic (defines the horizontal search range for the largest peak)
+        prominence_db : float
+            By how many dB a peak has to exceed the local threshold to be identified as a harmonic
+        prominence_smoothing : float
+            Factor to define the bandwidth of the local threshold smoothing (given as `factor * F0` for each frame)
+        abs_thrsh_db : float
+            Discard all harmonics that are below this absolute threshold in dB
+        perform_hps: boolean
+            Whether or not to pre-process the input signal with harmonic-percussive separation (HPS)
+        F_harm : int
+            Filter length for the harmonic median filter (only relevant when `perform_hps = True`)
+        F_perc : int
+            Filter length for the percussive median filter (only relevant when `perform_hps = True`)
+
+    Returns
+    -------
+        t : 1D np.ndarray
+            Time of each analysis frame in seconds
+        P : 3D np.ndarray
+            Peak frequencies and amplitudes for each time frame with dimensions (frames x max_harm x 2).
+            Detected peaks are ordered by harmonic index and both frequency and amplitude are zero
+            if no peak was detected.
+        X : 2D np.ndarray
+            Spectogram that was used to detect the peaks, possibly filtered with HPS
+
+    """
+
+    # calculate spectrogram
+    win = scipy.signal.get_window("hann", N) # using flattop for optimal amplitude estimation
+    X = np.abs(librosa.stft(x, n_fft=N, hop_length=H, center=False, window=win))
+    X = X / np.sum(win) * 2 # normalize spectrum so that amplitudes correspond to actual sinusoid factors
+
+    if perform_hps:
+        # optionally use only harmonic part of the spectrogram
+        X, _ = librosa.decompose.hpss(X, kernel_size=[hpss_filter_len, 32], margin=1.0)
+
+    t = librosa.frames_to_time(range(X.shape[1]), hop_length=H, sr=fs)
+    f_fft = np.fft.rfftfreq(N, 1/fs)
+
+    # resample f0 trajectory
+    if t_f0 is not None:
+        voiced = (f0 > 0).astype(int)
+        f0, _ = mir_eval.melody.resample_melody_series(t_f0, f0, voiced, t)
+
+    L = len(f0)
+    assert X.shape[1] == L, "Number of frames in F0 annotation does not match spectrogram size."
+
+    P = np.zeros((L, max_harm, 2))
+
+    for fr in range(L):
+        if f0[fr] <= 0:
+            continue # skip unvoiced frames
+
+        # calculate a local threshold for harmonic prominence
+        L_win = np.ceil(prominence_smoothing*f0[fr]/fs*N).astype(int)
+        window = np.hanning(L_win + (1 - L_win % 2))
+        window /= np.sum(window)
+        thrsh = 20 * np.log10(
+            np.convolve(np.pad(X[:,fr], (len(window)//2, len(window)//2)), window, mode="valid") + 1e-8
+        )
+
+        # find extremal values of interpolating spline of the spectral frame
+        tck = splrep(f_fft, X[:,fr], k=3, s=0)
+        ppoly = PPoly.from_spline(tck)
+        X_fr_extrema = ppoly.derivative().roots(extrapolate=False)
+        X_fr_extrema = np.append(X_fr_extrema, (f_fft[0], f_fft[-1]))
+
+        for i in range(max_harm):
+            f_test = (i + 1) * f0[fr]
+
+            if f_test > fs/2: # we're above Nyquist
+                continue
+
+            f_min = (i + 1/max_inharm) * f0[fr]
+            f_max = (i + max_inharm) * f0[fr]
+
+            mask = np.where((X_fr_extrema >= f_min) & (X_fr_extrema <= f_max))
+            if len(mask[0]) == 0: # no extrema in range, use integer multiple frequency
+                P[fr,i,0] = f_test
+                continue
+
+            X_range = splev(X_fr_extrema[mask], tck)
+            idx = np.argmax(X_range)
+
+            P[fr,i,0] = X_fr_extrema[mask[0][idx]]
+
+        mask = (P[fr, :, 0] > 0)
+        P[fr,mask,1] = np.clip(splev(P[fr, mask, 0], tck), 0, np.inf)
+
+        # remove harmonics that do not stand out enough
+        nearest_bin = np.argmin(np.abs(P[fr,:,0,None] - f_fft[None,:]), axis=1)
+        ampl_db = 20 * np.log10(P[fr,:,1] + 1e-8)
+        mask = ((ampl_db - thrsh[nearest_bin]) < prominence_db) & (ampl_db < abs_thrsh_db)
+        P[fr, mask,:] = 0
+
+    return t, P, X
+
+
+def find_peaks(x, fs=48000., N=4096, H=2048,
+               max_peaks=16, hpss_filter_len=10, freq_lim=4000., **kwargs):
     """Identify spectral peaks in an audio signal
 
     Using 'scipy.signal.find_peaks', the function finds peaks in the (filtered) spectrogram of a signal and uses
@@ -103,13 +242,13 @@ def find_peaks(x,
 
     Parameters
     ----------
-        x : 1D float numpy array
+        x : 1D np.ndarray
             Input audio signal
         fs : float
             Sampling rate in Hz
-        fft_size : int
+        N : int
             FFT size for each time frame in samples
-        hop_size : int
+        H : int
             Hop size for each time frame in samples
         max_peaks : int
             Maximum number of peaks per time frame
@@ -122,35 +261,34 @@ def find_peaks(x,
 
     Returns
     -------
-        t : 1D float numpy array (dimensions: (T))
-            Time of each frame in seconds. Dimension T depends on the signal length and the FFT hop size. 
-        P : 3D float numpy array (dimensions: (T, max_peaks, 2))
-            Peak frequencies and amplitudes for each time frame. Detected peaks are ordered by frequency first and
-            amplitude second. If 'F < max_peaks' peaks are detected, the last 'max_peaks - F' frequencies and amplitudes
-            are zero.
-        H : 2D complex float array (dimensions: (T, ceil(fft_size/2)))
-            Spectogram that was used to detect the peaks. It has been filtered with 'librosa.decompose.hpss' to remove
-            transient components. Also, frequencies above 'freq_lim' are suppressed.
+        t : 1D np.ndarray
+            Time of each analysis frame in seconds
+        P : 3D np.ndarray
+            Peak frequencies and amplitudes for each time frame with dimensions (frames x max_harm x 2).
+            Detected peaks are ordered by frequency first and amplitude second. If 'F < max_peaks' peaks are detected,
+            the last 'max_peaks - F' frequencies and amplitudes are zero.
+        X : 2D np.ndarray
+            Spectogram that was used to detect the peaks, possibly filtered with HPS
     """
 
-    H_STFT = librosa_stft(x, n_fft=fft_size, hop_length=hop_size, center=False)
-    t = librosa_frames_to_time(range(H_STFT.shape[1]), hop_length=hop_size, sr=fs)
+    X = librosa.stft(x, n_fft=N, hop_length=H, center=False)
+    t = librosa.frames_to_time(range(X.shape[1]), hop_length=H, sr=fs)
     P = np.zeros((len(t), max_peaks, 2))
 
     # filter out percussive component and look for peaks only in harmonic part
-    H_STFT, _ = librosa_hpss(H_STFT, kernel_size=[hpss_filter_len, 32], margin=1.0)
+    X, _ = librosa.decompose.hpss(X, kernel_size=[hpss_filter_len, 32], margin=1.0)
 
     # give lower weight to everything above given limit
-    mi = int(np.round(freq_lim / fs * fft_size))
-    H_STFT[mi:,:] *= 0.001 # - 60 dB
+    mi = int(np.round(freq_lim / fs * N))
+    X[mi:,:] *= 0.001 # - 60 dB
 
     for i in range(len(t)):
-        peaks = _find_peaks_single(H_STFT[:,i], fft_size, fs, max_peaks, **kwargs)
+        peaks = _find_peaks_single(X[:,i], N, fs, max_peaks, **kwargs)
 
         if (len(peaks) > 0):
             P[i, :len(peaks), :] = peaks
 
-    return t, P, H_STFT
+    return t, P, X
 
 
 def synth(f0,
@@ -246,17 +384,18 @@ def _find_peaks_single(H, fft_size, fs, max_peaks, **kwargs):
 
     # convert to log magnitude spectrum
     H_mag = np.abs(H)
+    H_scale = np.sum(scipy.signal.get_window("hann", fft_size)) / 2
     H_db = np.clip(20*np.log10(H_mag + 0.00001), -90, 1000) # adding -100dB const to avoid log(0)
 
     sig_rms = np.sqrt(np.mean(np.square(H_mag))/fft_size) # rms of harmonic part
 
-    maxima, _ = scipy_find_peaks(H_db, **kwargs)
+    maxima, _ = scipy.signal.find_peaks(H_db, **kwargs)
 
     peaks = []
     for i in maxima:
         # use parabolic interpolation to find true peak and save frequency val
         k = i + (H_db[i-1] - H_db[i+1]) / (2 * (H_db[i-1] - 2 * H_db[i] + H_db[i+1]))
-        peaks.append((fs*k/fft_size, H_mag[i]/np.max(H_mag)))
+        peaks.append((fs*k/fft_size, H_mag[i]/H_scale))
 
     peaks.sort(key=lambda tup: tup[1], reverse=True) # sort by amplitude (highest first)
     peaks = peaks[:max_peaks] # truncate
