@@ -66,21 +66,18 @@ def test_harmonic_cost():
     c = dit.cost.harmonic(f1, f2, fixed_wc=wc)
     dc = dit.cost.harmonic(f1, f2, fixed_wc=wc, gradient=True)
 
-    assert np.allclose(c, np.array([0, 1, 0.618503]))
-    assert np.allclose(dc, np.array([0, 0, 0.0119087]), atol=1e-07)
 
-    f1 = 300 * np.power(2, np.arange(3)/12)
-    f2 = 200 * np.arange(1, 3)
-    c = dit.cost.harmonic(f1, f2)
-    dc = dit.cost.harmonic(f1, f2, gradient=True)
+    assert np.allclose(c, np.array([0, 1, 0.618503]))
+    assert np.allclose(dc, np.array([0, 0, 0.093712]), atol=1e-05)
+
+    f1 = np.array([300, 310, 1000])
+    f2 = np.array([300, 310])
+    c = dit.cost.harmonic(f1[:,None], f2[None,:])
 
     assert c.shape[0] == 3 and c.shape[1] == 2
-    assert np.allclose(c, np.array([
-        [0.2576495, 0.30011772], [0.18561374, 0.43510599], [0.1349443, 0.64500703]
-    ]))
-    assert np.allclose(dc, np.array([
-        [-0.00085488, 0.00132218], [-0.00060072, 0.00199433], [-0.00042348, 0.00286612]
-    ]), atol=1e-07)
+    assert np.isclose(c[1,0], c[0,1])
+    assert c[0,0] == 0 and c[1,1] == 0
+    assert np.allclose(c[-1,:], np.zeros(2), atol=1e-5)
 
 
 def test_tonal_cumulated():
@@ -115,31 +112,26 @@ def test_tonal_cumulated():
 
 
 def test_harmonic_cumulated():
-    fs = 16000.
+    P_lead = np.array([
+        [(440, 1), (880, 1), (1320, 1)],
+        [(440, 1), (880, 1), (1320, 1)],
+        [(435, 1), (870, 1), (1305, 1)],
+        [(445, 1), (890, 1), (1335, 1)],
+    ])
+    P_backing = np.array([
+        [(440, 1), (880, 1), (1320, 1)],
+        [(440, 1), (880, 1), (1320, 1)],
+        [(440, 1), (880, 1), (1320, 1)],
+        [(440, 1), (880, 1), (1320, 1)],
+    ])
 
-    x1 = np.zeros(int(1*fs))
-    sig, phase_carry = dit.utils.synth(440, 0.25, fs, waveform='sawtooth')
-    x1[:int(0.25*fs)] = sig
-    sig, phase_carry = dit.utils.synth(440 * np.power(2, 4/12), 0.25, fs, waveform='sawtooth', init_phase=phase_carry)
-    x1[int(0.25*fs):int(0.5*fs)] = sig
-    sig, phase_carry = dit.utils.synth(440 * 1.3333333, 0.25, fs, waveform='sawtooth', init_phase=phase_carry)
-    x1[int(0.5*fs):int(0.75*fs)] = sig
-    sig, _ = dit.utils.synth(440 * np.power(2, 7/12), 0.25, fs, waveform='sawtooth', init_phase=phase_carry)
-    x1[int(0.75*fs):] = sig
-
-    x2, _ = dit.utils.synth(220, 1., fs, waveform='sawtooth')
-    sig, _ = dit.utils.synth(220 * 1.5, 1., fs, waveform='sawtooth')
-    x2 += sig
-
-    _, P_lead, _ = dit.utils.find_peaks(x1, fs=fs, N=4000, H=4000, max_peaks=12, height=0)
-    _, P_backing, _ = dit.utils.find_peaks(x2, fs=fs, N=4000, H=4000, max_peaks=12, height=0)
 
     c = dit.cost.harmonic_for_frames(P_lead, P_backing)
-    dc = 1000 * dit.cost.harmonic_for_frames(P_lead, P_backing, gradient=True)
+    dc = dit.cost.harmonic_for_frames(P_lead, P_backing, gradient=True)
 
-    assert np.allclose(c, np.array([0.234, 0.353, 0.236, 0.028]), atol=0.01)
-    assert np.allclose(dc, np.array([-0.531, 0.431, -0.177, -0.039]), atol=0.01)
+    assert np.allclose(c,  np.array([0, 0, 0.2553904,  0.2566513]), atol=1e-5)
+    assert np.allclose(dc, np.array([0, 0, 0.0439010, -0.0433353]), atol=1e-5)
 
     # test case with 2D array
     c = dit.cost.harmonic_for_frames(P_lead[0], P_backing[0])
-    assert np.allclose(c, np.array([0.234]), atol=0.05)
+    assert np.allclose(c, np.array([0]), atol=1e-5)
