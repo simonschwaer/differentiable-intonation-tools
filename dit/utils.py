@@ -295,7 +295,7 @@ def synth(f0,
           duration=1.,
           fs=48000.,
           waveform='sawtooth',
-          num_harmonics=8,
+          num_harmonics=16,
           vib_rate=0.,
           vib_depth=10,
           init_phase=[]):
@@ -347,7 +347,7 @@ def synth(f0,
         elif waveform == 'sawtooth':
             magnitudes = np.ones((num_harmonics, 2))
             magnitudes[:,0] = np.arange(1, num_harmonics+1)
-            magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n for n in np.arange(1, num_harmonics)])
+            magnitudes[1:,1] = np.array([2/np.pi * (-1)**n / n**1.5 for n in np.arange(1, num_harmonics)])
             magnitudes[:,1] *= 0.5
         elif waveform == 'flat':
             magnitudes = np.ones((num_harmonics, 2))
