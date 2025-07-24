@@ -36,7 +36,7 @@ def tonal(f, K=12, f_ref=440., gradient=False):
     f_arr = np.atleast_1d(np.asarray(f, dtype=np.float32))
 
     if not gradient:
-        return (1 - np.cos(2 * np.pi * K * np.log2(f_arr/f_ref))) /  2
+        return (1 - np.cos(2 * np.pi * K * np.log2(f_arr/f_ref))) / 2
     else:
         return np.pi * K * np.sin(2 * np.pi * K * np.log2(f_arr/f_ref)) / 1200
 
@@ -169,7 +169,7 @@ def tonal_for_frames(P1, P2, K=12, f_ref=440., fit_grid=True, gradient=False):
 
     result = np.zeros((T))
     for t in range(T):
-        if len(P_lead[t]) == 0 or np.sum(P_lead[t,:,0]) < 0.0001:
+        if len(P_lead[t]) == 0 or np.sum(P_lead[t,:,1]) < 0.0001:
             # return zero cost if the set is empty or practically silent
             # (happens e.g. when a voice is quiet in the signal analyzed by 'utils.find_peaks')
             continue
@@ -199,7 +199,8 @@ def tonal_for_frames(P1, P2, K=12, f_ref=440., fit_grid=True, gradient=False):
     return result
 
 
-def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp=1, norm="lead_backing_sum", ampl_method="min", **kwargs):
+def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1., ampl_exp=1.,
+                        norm="lead_backing_sum", ampl_method="min", ignore_distant_pairs_thrsh=None, **kwargs):
     """Calculate harmonic cost between all pairs of pure tones in two sets
 
     Parameters
@@ -212,11 +213,22 @@ def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp
             (T, M, 2) numpy array with M frequency/amplitude pairs (f_m, a_m), as for example
             returned by 'utils.find_peaks'. 'T' is an optional time dimension and must be equal
             to 'P1' if given.
-        fixed_wc : float
-            Optional fixed dissonance curve width parameter
-            (default "None": automatic width based on frequency)
-        gradient : bool
-            Whether to return the cost value (default) or the gradient at f
+        log_mag_weights : bool
+            Whether or not to use log compression `log(1 + gamma * mag)` for the amplitude weighting of each pair
+            (default: False)
+        log_mag_gamma : float
+            Compression strength for the log compression using the formula `log(1 + gamma * mag)` (default: 1.0)
+        ampl_exp : float
+            Optional exponential compression for the amplitude weighting, where a value < 1 compresses the amplitudes
+            (default: 1.0)
+        norm : string
+            Which norm to apply to the result (one of "lead_sum, "lead_count", "lead_backing_count", "full_count",
+            "lead_backing_sum", "full_sum", "none")
+        ampl_method : string
+            Which method to use to compare amplitudes (one of "min", "mult", "beating")
+        ignore_distant_pairs_thrsh : float or None
+            If a number is given, frequency pairs with a distance above this value in octaves are ignored
+            in the calculation (default: None)
 
     Returns
     -------
@@ -241,6 +253,17 @@ def harmonic_for_frames(P1, P2, log_mag_weights=False, log_mag_gamma=1, ampl_exp
         A = A ** ampl_exp
 
     D = harmonic(P_lead[:,None,:,0], P_backing[:,:,None,0], **kwargs)
+
+    if ignore_distant_pairs_thrsh is not None:
+        with np.errstate(divide='ignore', invalid='ignore'): # supress warning of log of zero
+            ratio = np.where(
+                (P_lead[:,None,:,0] > 0) & (P_backing[:,:,None,0] > 0),
+                P_lead[:,None,:,0] / P_backing[:,:,None,0],
+                0
+            )
+            dist_oct = np.where(ratio > 0, np.log2(ratio), 0)
+        dist_mask = (dist_oct > ignore_distant_pairs_thrsh)
+        A[dist_mask] = 0 # ignore pairs that have a distance larger than the given threshold
 
     result = np.sum(A*D, axis=(1, 2))
 
